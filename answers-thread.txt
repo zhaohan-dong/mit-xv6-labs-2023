@@ -1,0 +1,9 @@
+The two threads are both trying to insert at table[i], in the same bucket. Keys in each bucket form linked lists.
+
+Imagine we have a table.
+
+Thread 1 identifies a key that is missing and tries to insert.
+Before the insertion completes (where the new entry->next points to the old table before insertion),
+thread 2 identifies a key is missing and inserts.
+
+Now the insertion by thread 1 is left dangling, because the insertion by thread 2 points to the old table before thread 1 insertion.

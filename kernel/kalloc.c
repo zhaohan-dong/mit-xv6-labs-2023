@@ -14,69 +14,108 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
-struct run {
-  struct run *next;
+struct run
+{
+    struct run *next;
 };
 
-struct {
-  struct spinlock lock;
-  struct run *freelist;
-} kmem;
-
-void
-kinit()
+struct
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+    struct spinlock lock;
+    struct run *freelist;
+} kmem[NCPU];
+
+void kinit()
+{
+    for (int i = 0; i < NCPU; i++)
+    {
+        initlock(&kmem[i].lock, "kmem");
+    }
+    freerange(end, (void *)PHYSTOP);
 }
 
-void
-freerange(void *pa_start, void *pa_end)
+void freerange(void *pa_start, void *pa_end)
 {
-  char *p;
-  p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+    char *p;
+    p = (char *)PGROUNDUP((uint64)pa_start);
+    for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
+        kfree(p);
 }
 
 // Free the page of physical memory pointed at by pa,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
-void
-kfree(void *pa)
+void kfree(void *pa)
 {
-  struct run *r;
+    push_off();
+    int id = cpuid();
+    pop_off();
 
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
+    struct run *r;
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+    if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
+        panic("kfree");
 
-  r = (struct run*)pa;
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+    r = (struct run *)pa;
+
+    acquire(&kmem[id].lock);
+    r->next = kmem[id].freelist;
+    kmem[id].freelist = r;
+    release(&kmem[id].lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
-void *
-kalloc(void)
+void *kalloc(void)
 {
-  struct run *r;
+    push_off();
+    int id = cpuid();
+    pop_off();
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    struct run *r;
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
-  return (void*)r;
+    acquire(&kmem[id].lock);
+    r = kmem[id].freelist;
+
+    // If there's free memory for this cpu
+    if (r)
+    {
+        kmem[id].freelist = r->next;
+    }
+    release(&kmem[id].lock);
+
+    // If there's no free memory for this cpu
+    if (!r)
+    {
+        // Search for memory from other cpus
+        for (int other_cpu_id = 0; other_cpu_id < NCPU; other_cpu_id++)
+        {
+            if (other_cpu_id == id)
+            {
+                continue;
+            }
+            acquire(&kmem[other_cpu_id].lock);
+            struct run *f = kmem[other_cpu_id].freelist;
+            if (f)
+            {
+                r = f; // Give other cpu's free page to this one
+                kmem[other_cpu_id].freelist = f->next;
+            }
+            release(&kmem[other_cpu_id].lock);
+            if (r)
+            {
+                break;
+            }
+        }
+    }
+
+    if (r)
+        memset((char *)r, 5, PGSIZE); // fill with junk
+
+    return (void *)r;
 }

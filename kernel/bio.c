@@ -77,7 +77,6 @@ static struct buf *bget(uint dev, uint blockno)
     uint bucket_index = bucket_hash(
         blockno); // Use the has function to get which bucket it is in
 
-    acquire(&bcache.lock);
     // Acquire only lock on that bucket
     acquire(&bcache.bucket[bucket_index].bucket_lock);
 
@@ -88,30 +87,45 @@ static struct buf *bget(uint dev, uint blockno)
         if (b->dev == dev && b->blockno == blockno)
         {
             b->refcnt++;
-            release(&bcache.lock);
             release(&bcache.bucket[bucket_index].bucket_lock);
             acquiresleep(&b->lock);
             return b;
         }
     }
 
-    // Not cached.
+    // Block not cached, need to find a buffer to evict
+    struct buf *dst = 0;
     for (int buf_index = 0; buf_index < NBUF; buf_index++)
     {
         b = &bcache.bucket[bucket_index].buf[buf_index];
         if (b->refcnt == 0)
         {
-            b->dev = dev;
-            b->blockno = blockno;
-            b->valid = 0;
-            b->refcnt = 1;
-            // release(&bcache.lock);
-            release(&bcache.bucket[bucket_index].bucket_lock);
-            acquiresleep(&b->lock);
-            return b;
+            dst = b;
+            break;
         }
     }
-    panic("bget: no buffers");
+
+    // If no buffer was found, evict the first buffer regardless of use
+    if (!dst)
+    {
+        dst = &bcache.bucket[bucket_index]
+                   .buf[0]; // Simple choice for demonstration
+        if (dst->valid)
+        {
+            bwrite(dst);
+        }
+    }
+
+    // Update the chosen buffer with new data
+    dst->dev = dev;
+    dst->blockno = blockno;
+    dst->valid = 0;
+    dst->refcnt = 1;
+
+    release(&bcache.bucket[bucket_index].bucket_lock);
+    acquiresleep(&dst->lock);
+
+    return dst;
 }
 
 // Return a locked buf with the contents of the indicated block.
@@ -145,7 +159,7 @@ void brelse(struct buf *b)
 
     releasesleep(&b->lock);
 
-    int bucket_index = find_bucket_index(b);
+    uint bucket_index = find_bucket_index(b);
 
     // acquire(&bcache.lock);
     acquire(&bcache.bucket[bucket_index].bucket_lock);
@@ -161,8 +175,8 @@ void brelse(struct buf *b)
     //     bcache.head.next = b;
     // }
 
-    // release(&bcache.lock);
     release(&bcache.bucket[bucket_index].bucket_lock);
+    // release(&bcache.lock);
 }
 
 void bpin(struct buf *b)

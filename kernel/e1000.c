@@ -110,6 +110,7 @@ int e1000_transmit(struct mbuf *m)
     {
         printf("Error: E1000 hasn't finished the corresponding previous "
                "transmission request\n");
+        release(&e1000_lock);
         return -1;
     }
 
@@ -122,7 +123,7 @@ int e1000_transmit(struct mbuf *m)
 
     // Fill in transmission descriptor
     tx_ring[tx_ring_index].addr = (uint64)m->head;
-    tx_ring[tx_ring_index].length = m->len;
+    tx_ring[tx_ring_index].length = (uint64)m->len;
 
     // Set cmd
     tx_ring[tx_ring_index].cmd |= E1000_TXD_CMD_EOP;
@@ -155,6 +156,7 @@ static void e1000_recv(void)
         // Update buffer->len to one reported by the descriptor
         rx_mbufs[rx_ring_index]->len = rx_ring[rx_ring_index].length;
 
+        // Deliver buffer to network stack
         release(&e1000_lock);
         net_rx(rx_mbufs[rx_ring_index]);
         acquire(&e1000_lock);
@@ -168,6 +170,10 @@ static void e1000_recv(void)
         rx_ring[rx_ring_index].addr = (uint64)rx_mbufs[rx_ring_index]->head;
         // Clear status bit to 0
         rx_ring[rx_ring_index].status = 0;
+
+        // Move to next index
+        regs[E1000_RDT] = rx_ring_index;
+        rx_ring_index = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
     }
 
     release(&e1000_lock);
